@@ -159,43 +159,19 @@ legada não é importada automaticamente. O servidor aceita TCP apenas em
 O TAMP não oferece mais criação de usuários de projeto; contas existentes são
 preservadas. Por ser administrativa, a conta root tem acesso amplo aos bancos.
 
-### Definir a senha
+### Configuração inicial de root no Termux
+
+Na instalação Termux validada pelo mantenedor, a autenticação administrativa
+sem senha pelo socket não estava disponível. **O procedimento que funcionou foi
+`--recover`**, que configura a senha da conta root existente com backup do banco.
+Use-o na configuração inicial quando ainda não consegue entrar como root, ou
+para recuperar uma senha perdida. Não é necessário executá-lo para cada login.
 
 Com seu editor, crie `~/senha-root.txt`, em uma pasta privada do Termux.
 Coloque uma senha nova de **pelo menos 12 caracteres na primeira linha**.
 
 ```bash
 chmod 600 ~/senha-root.txt
-tamp start mariadb
-tamp root --password-file ~/senha-root.txt
-```
-
-Outra forma de fornecer a senha, sem colocá-la nos argumentos:
-
-```bash
-tamp root --password-stdin < ~/senha-root.txt
-```
-
-A operação normal só funciona se já houver uma conta administrativa válida via
-socket. O comando verifica a identidade autenticada e o privilégio global direto
-`CREATE USER`; conseguir executar `SELECT 1` não é suficiente.
-
-Após o sucesso, entre no phpMyAdmin com **root e a senha configurada**.
-O phpMyAdmin usa autenticação por cookie e não armazena essa senha no seu arquivo
-PHP de configuração. Login sem senha permanece bloqueado.
-
-### Quando root não entra: recuperação
-
-Primeiro, veja a autenticação disponível sem senha:
-
-```bash
-tamp db-auth
-```
-
-`Autenticado: @localhost` significa conexão como **usuário anônimo**, não como a
-conta solicitada. Se não houver acesso administrativo utilizável, execute:
-
-```bash
 tamp root --recover --password-file ~/senha-root.txt
 ```
 
@@ -212,16 +188,58 @@ A recuperação:
 > datadir, nem criação de contas novas. Uma falha após alterar root pode deixar
 > a senha já modificada; não existe rollback automático do banco.
 
-A recuperação troca root para autenticação por senha. Depois dela, use:
+### Entrar e verificar o acesso depois da configuração
+
+No phpMyAdmin, use **root e a senha configurada**. O Apache também precisa estar
+ativo (`tamp start apache`). O phpMyAdmin usa autenticação por cookie; não grava
+a senha no seu arquivo PHP de configuração e não permite login sem senha.
+
+No terminal, use:
 
 ```bash
 tamp sql --password
 ```
 
-O cliente MariaDB pedirá a senha. `tamp db-auth` continua sendo um diagnóstico
-**sem senha**: root recusado ali não significa que o login com senha esteja quebrado.
-Para alterar credenciais depois, use o console autenticado; não é necessário
-recuperar o banco a cada acesso.
+Para verificar a identidade autenticada, sem abrir o console interativo:
+
+```bash
+tamp sql --password --execute 'SELECT USER(), CURRENT_USER();'
+```
+
+O cliente solicitará a senha atual. `CURRENT_USER()` deve identificar a conta
+root utilizada na autenticação. Esse é o teste de acesso autenticado recomendado
+após a recuperação. Para verificar o transporte TCP usado pelo phpMyAdmin:
+
+```bash
+mariadb --no-defaults --protocol=tcp -h 127.0.0.1 -P 3306 -u root -p \
+  --execute 'SELECT CURRENT_USER();'
+```
+
+### Por que db-auth e root sem --recover podem ser recusados?
+
+Os comandos abaixo **não usam a senha atual para autenticar no banco**:
+
+```bash
+tamp db-auth
+tamp root --password-file ~/senha-root.txt
+```
+
+- `db-auth` testa somente contas acessíveis **sem senha pelo socket**.
+- `root --password-file` lê a **nova senha a definir**, mas tenta autorizar a
+  alteração usando uma conta administrativa sem senha pelo socket.
+- A recuperação configura root para exigir senha. Portanto, recusa nesses dois
+  comandos é esperada quando não existe outra conta administrativa sem senha.
+- `Autenticado: @localhost` identifica a conta anônima, não root nem o usuário
+  solicitado. Ela não permite administrar usuários.
+
+**Não use `db-auth` como teste do login no phpMyAdmin e não repita a recuperação
+apenas porque ele mostra uma recusa.** Se o login autenticado funciona, o banco
+já está acessível. O comando sem `--recover` fica disponível para instalações
+que possuam uma conta administrativa válida sem senha pelo socket.
+
+Para alterar a senha posteriormente, use o console autenticado (`tamp sql
+--password`) ou o phpMyAdmin. A recuperação fica reservada à configuração sem
+acesso administrativo utilizável e à perda de acesso.
 
 O backup contém os dados e credenciais anteriores: mantenha-o privado.
 Nunca restaure arquivos sobre um MariaDB em execução. A interrupção abrupta
@@ -266,8 +284,8 @@ ou `all`; se omitido, o seletor é `all`.
 | `tamp doctor all` | Testar configuração e saúde dos serviços |
 | `tamp logs apache` | Ver os logs Apache/PHP e supervisor |
 | `tamp diagnose /projeto/` | Fazer GET local e mostrar os logs |
-| `tamp db-auth` | Verificar identidade e privilégio administrativo sem senha |
-| `tamp root --password-file ARQUIVO` | Alterar senha usando acesso administrativo existente |
+| `tamp db-auth` | Diagnosticar somente acesso sem senha pelo socket; não valida login por senha |
+| `tamp root --password-file ARQUIVO` | Definir nova senha apenas com administração sem senha já disponível pelo socket |
 | `tamp root --recover --password-file ARQUIVO` | Recuperar root com backup offline |
 | `tamp sql --password` | Abrir console SQL com autenticação explícita |
 | `tamp sql --password --execute 'SHOW DATABASES;'` | Executar SQL após pedir a senha |
@@ -358,7 +376,8 @@ bash install.sh --uninstall --yes
 | Projetos antigos não aparecem | Confira a pasta ativa no painel; use `storage shared` para os projetos de `/sdcard/htdocs`. |
 | Pasta abre com acesso negado | Verifique índice, regras do projeto e logs; a listagem de diretórios é desativada. |
 | `Access denied` no phpMyAdmin | Confirme a senha de root, o MariaDB ativo e, se necessário, use recuperação. |
-| `Autenticado: @localhost` | É uma conta anônima, sem os privilégios de root. |
+| `Autenticado: @localhost` em `db-auth` | É a conta anônima; para testar root com senha, use `tamp sql --password`. |
+| `db-auth` recusa root após recuperação | Esperado para root protegido por senha; confira o login autenticado, não repita recuperação por isso. |
 | `normally down` junto de `run:` | É o padrão de partida do runit; `run:` indica serviço em execução. |
 | `runsv not running` | O supervisor desapareceu. Use a versão atual e confira `tamp stop` e `tamp logs`. |
 | Porta 3306 ou 8080 ocupada | Verifique outros servidores. O TAMP não encerra serviços externos. |
